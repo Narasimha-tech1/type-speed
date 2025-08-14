@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Typing Shooter - Big Dictionary, Slow Start, Any Char</title>
+<style>
+body {margin:0;overflow:hidden;background:#b2d8ff;transition:background 0.8s;font-family:Arial;}
+canvas {display:block;position:absolute;top:0;left:0;}
+#gun-container {position:fixed;bottom:30px;left:50%;transform:translateX(-50%);
+    width:120px;height:120px;z-index:2;}
+#gun-barrel {width:22px;height:70px;background:#555;border-radius:10px;margin:0 auto -12px auto;
+    box-shadow:0 0 8px #000 inset;}
+#gun-body {width:90px;height:45px;background:linear-gradient(#333,#111);
+    border-radius:15px;margin:0 auto;box-shadow:0 4px 10px rgba(0,0,0,0.5);}
+#stats {position:fixed;top:10px;left:50%;transform:translateX(-50%);
+    background:rgba(0,0,0,0.5);color:#fff;padding:6px 14px;border-radius:6px;font-size:17px;}
+#gameOverScreen {position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);
+    color:#fff;display:none;flex-direction:column;justify-content:center;align-items:center;font-size:22px;z-index:5;}
+#gameOverScreen button {padding:10px 20px;font-size:18px;margin-top:20px;
+    border:none;background:#28a745;color:#fff;border-radius:6px;cursor:pointer;}
+#loadingScreen {position:fixed;top:0;left:0;width:100%;height:100%;
+    background:#000;color:#fff;display:flex;flex-direction:column;justify-content:center;align-items:center;
+    font-size:22px;z-index:10;}
+</style>
+</head>
+<body>
+<div id="loadingScreen">Loading dictionary...</div>
+<canvas id="gameCanvas"></canvas>
+<div id="gun-container"><div id="gun-barrel"></div><div id="gun-body"></div></div>
+<div id="stats"></div>
+<div id="gameOverScreen">
+  <div id="finalStats"></div>
+  <button onclick="location.reload()">Restart</button>
+</div>
+
+<!-- Working direct sound file URLs -->
+<audio id="fireSound" src="fire.mp3" preload="auto"></audio>
+<audio id="hitSound" src="fire.mp3" preload="auto"></audio>
+<audio id="wordCompleteSound" src="word_complete.mp3" preload="auto"></audio>
+<audio id="missSound" src="miss.mp3" preload="auto"></audio>
+<audio id="levelUpSound" src="level-up-enhancement-8-bit-retro-sound-effect-153002.mp3" preload="auto"></audio>
+<audio id="gameOverSound" src="game-over-arcade-6435.mp3" preload="auto"></audio>
+
+<script>
+const canvas=document.getElementById('gameCanvas'),ctx=canvas.getContext('2d');
+canvas.width=innerWidth;canvas.height=innerHeight;
+const loadingScreen=document.getElementById('loadingScreen');
+const statsEl=document.getElementById('stats'),finalStatsEl=document.getElementById('finalStats');
+const gameOverScreen=document.getElementById('gameOverScreen');
+
+const fireSound=document.getElementById('fireSound'),
+      hitSound=document.getElementById('hitSound'),
+      wordCompleteSound=document.getElementById('wordCompleteSound'),
+      missSound=document.getElementById('missSound'),
+      levelUpSound=document.getElementById('levelUpSound'),
+      gameOverSound=document.getElementById('gameOverSound');
+
+const bgColors=["#b2d8ff","#ffd6b2","#d4ffb2","#fbb2d8","#e6b2ff","#fff3b2","#ffc2b2"];
+
+let fullWordList=[];
+let level=1,score=0,lives=3,xp=0,xpToNext=5;
+let wordSpeed=0.25,spawnRate=2800,lastSpawn=0;
+let wordQueue=[],fallingWords=[],bullets=[],particles=[];
+let activeWordIndex=0,gameRunning=true;
+
+class Word{
+  constructor(text,x,y){this.textArr=text.split('');this.x=x;this.y=y;this.spawnTime=Date.now();}
+  draw(isActive){
+    ctx.font='bold 28px monospace';
+    if(isActive){ctx.strokeStyle='#ff0';ctx.lineWidth=2;
+      ctx.strokeRect(this.x-5,this.y-32,this.textArr.length*22+10,40);}
+    ctx.fillStyle='#222';
+    let b=0;if(Date.now()-this.spawnTime<400) b=Math.sin(((Date.now()-this.spawnTime)/400)*Math.PI)*12;
+    this.textArr.forEach((ch,i)=>ctx.fillText(ch,this.x+i*22,this.y-b));
+  }
+  update(){
+    this.y+=wordSpeed;
+    if(this.y>canvas.height){
+      lives--; removeWord(this);
+      if(activeWordIndex>=fallingWords.length) activeWordIndex=0;
+    }
+  }
+  getLetterPos(i){return {x:this.x+i*22+10,y:this.y-18};}
+}
+class Bullet{
+  constructor(sx,sy,tx,ty){this.x=sx;this.y=sy;this.tx=tx;this.ty=ty;this.r=5;this.speed=25;this.done=false;}
+  update(){
+    const dx=this.tx-this.x,dy=this.ty-this.y,dist=Math.hypot(dx,dy);
+    if(dist<this.speed){
+      this.x=this.tx;this.y=this.ty;this.done=true;
+      hitSound.currentTime=0;hitSound.play();
+      makeExplosion(this.tx,this.ty);
+    } else {this.x+=dx/dist*this.speed;this.y+=dy/dist*this.speed;}
+  }
+  draw(){
+    ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+    ctx.fillStyle='#ff5733';ctx.shadowColor='#ff5733';ctx.shadowBlur=8;ctx.fill();ctx.shadowBlur=0;
+  }
+}
+class Particle{
+  constructor(x,y){this.x=x;this.y=y;this.radius=Math.random()*3+2;
+    this.color="#ff"+Math.floor(Math.random()*90+100).toString(16)+"33";
+    this.speedX=(Math.random()-0.5)*4;this.speedY=(Math.random()-0.5)*4;this.alpha=1;}
+  update(){this.x+=this.speedX;this.y+=this.speedY;this.alpha-=0.03;}
+  draw(){ctx.globalAlpha=this.alpha;ctx.beginPath();ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
+    ctx.fillStyle=this.color;ctx.fill();ctx.globalAlpha=1;}
+}
+function makeExplosion(x,y){for(let i=0;i<6;i++)particles.push(new Particle(x,y));}
+
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}}
+function refillQueueForLevel(){const maxLen=3+level*2;wordQueue=fullWordList.filter(w=>w.length<=maxLen);shuffle(wordQueue);}
+function getNextWord(){if(!wordQueue.length)refillQueueForLevel();return wordQueue.pop();}
+function removeWord(w){fallingWords=fallingWords.filter(f=>f!==w);}
+function spawnWord(){
+  const text=getNextWord(),ls=22,width=text.length*ls,y=50,gap=40;
+  let x,tries=0,overlap;
+  do{
+    x=Math.random()*(canvas.width-width-40)+20;overlap=false;
+    for(let w of fallingWords){
+      const horiz=(x<w.x+w.textArr.length*ls && x+width>w.x);
+      const vert=(y> w.y-gap && y< w.y+gap);
+      if(horiz&&vert){overlap=true;break;}
+    }
+    tries++;if(tries>20)break;
+  }while(overlap);
+  fallingWords.push(new Word(text,x,y));
+  if(fallingWords.length===1) activeWordIndex=0;
+}
+function shootLetter(k){
+  const word=fallingWords[activeWordIndex];
+  if(!word||!word.textArr.length)return;
+  const expected=word.textArr[0];
+  if(expected.toLowerCase()!==k.toLowerCase()){missSound.currentTime=0;missSound.play();return;}
+  const barrel=document.getElementById('gun-barrel').getBoundingClientRect();
+  const gunPos={x:barrel.left+barrel.width/2,y:barrel.top};
+  const pos=word.getLetterPos(0);
+  word.textArr.shift();score+=10;
+  fireSound.currentTime=0;fireSound.play();
+  bullets.push(new Bullet(gunPos.x,gunPos.y,pos.x,pos.y));
+  if(word.textArr.length===0){
+    removeWord(word);wordCompleteSound.currentTime=0;wordCompleteSound.play();
+    xp++;if(xp>=xpToNext)levelUp();
+    if(activeWordIndex>=fallingWords.length)activeWordIndex=0;
+  }
+}
+function updateStats(){statsEl.textContent=`Level: ${level} | Score: ${score} | Lives: ${lives}`;}
+function levelUp(){
+  xp=0;level++;xpToNext=Math.min(15,xpToNext+3);
+  wordSpeed+=0.15;spawnRate=Math.max(600,spawnRate-150);
+  refillQueueForLevel();document.body.style.background=bgColors[level%bgColors.length];
+  levelUpSound.currentTime=0;levelUpSound.play();
+}
+function endGame(){gameRunning=false;gameOverSound.currentTime=0;gameOverSound.play();
+  finalStatsEl.innerHTML=`<h1>Game Over</h1>Score: ${score}<br>Level: ${level}`;
+  gameOverScreen.style.display='flex';}
+function gameLoop(ts){
+  if(!gameRunning)return;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(ts-lastSpawn>spawnRate){spawnWord();if(Math.random()<0.3)spawnWord();lastSpawn=ts;}
+  fallingWords.forEach((w,i)=>{w.update();w.draw(i===activeWordIndex);});
+  for(let i=bullets.length-1;i>=0;i--){bullets[i].update();bullets[i].draw();if(bullets[i].done)bullets.splice(i,1);}
+  for(let i=particles.length-1;i>=0;i--){particles[i].update();particles[i].draw();if(particles[i].alpha<=0)particles.splice(i,1);}
+  updateStats();if(lives<=0) endGame();
+  requestAnimationFrame(gameLoop);
+}
+
+window.addEventListener('keydown',e=>{if(e.key.length===1)shootLetter(e.key);});
+window.addEventListener('resize',()=>{canvas.width=innerWidth;canvas.height=innerHeight;});
+
+// Load dictionary with loading screen
+fetch('words.txt').then(r=>r.text()).then(t=>{
+  fullWordList=t.split(/\r?\n/).map(w=>w.trim()).filter(Boolean);
+  refillQueueForLevel();
+  spawnWord();
+  loadingScreen.style.display='none';
+  requestAnimationFrame(gameLoop);
+});
+</script>
+</body>
+</html>
